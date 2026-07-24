@@ -94,6 +94,21 @@ Mount `GATEWAY_DATA_DIR` on persistent storage. Queued tasks survive a gateway r
 - The upstream Gradio port is still unauthenticated. For production, bind it to localhost or restrict it with the platform firewall so only this gateway is public.
 - The first release intentionally supports video-driven avatars only. Voice cloning and speech synthesis remain separate ContentPlane providers; the gateway receives only the final driving audio.
 
+### Compshare image
+
+The Compshare image runs every `/start.d/*.sh` file when the container starts. After cloning and installing the gateway, link the versioned startup script into that directory:
+
+```bash
+ln -s /root/contentplane-avatar-gateway/deploy/compshare-start.sh \
+  /start.d/contentplane-avatar-gateway.sh
+```
+
+Keep the production token outside Git in `/root/contentplane-avatar-gateway/.env`, and make it readable only by root:
+
+```bash
+chmod 600 /root/contentplane-avatar-gateway/.env
+```
+
 ## Verify
 
 ```bash
