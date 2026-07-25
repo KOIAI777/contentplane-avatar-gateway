@@ -106,7 +106,9 @@ class GradioInfiniteTalkAdapter:
 
             snapshot = self._poll(client)
             gallery, status, queue_status, resources, logs = snapshot
-            prompt_id = prompt_id or self._extract_prompt_id(self._join_status(status, queue_status, resources, logs))
+            latest_prompt_id = self._extract_prompt_id(self._join_status(status, queue_status, resources, logs))
+            if latest_prompt_id:
+                prompt_id = latest_prompt_id
             report(
                 ProgressUpdate(
                     message=self._join_status(status, queue_status, resources),
@@ -221,8 +223,8 @@ class GradioInfiniteTalkAdapter:
 
     @staticmethod
     def _extract_prompt_id(value: str) -> str | None:
-        match = PROMPT_ID_PATTERN.search(value)
-        return match.group(1) if match else None
+        matches = PROMPT_ID_PATTERN.findall(value)
+        return matches[-1] if matches else None
 
     def _find_comfyui_video(self, prompt_id: str | None) -> str | None:
         if not prompt_id or not self._settings.comfyui_url:

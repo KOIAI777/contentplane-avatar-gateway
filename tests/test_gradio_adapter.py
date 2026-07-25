@@ -176,3 +176,84 @@ def test_adapter_uses_comfyui_history_when_gradio_gallery_was_consumed(tmp_path:
     assert fetched == [f"http://127.0.0.1:8188/history/{client.prompt_id}"]
     assert downloaded == ["http://127.0.0.1:8188/view?filename=InfiniteTalk_00005-audio.mp4&subfolder=&type=output"]
     assert result.source_path.read_bytes() == b"result"
+
+
+def test_adapter_uses_latest_prompt_id_from_cumulative_gradio_logs(tmp_path: Path) -> None:
+    old_prompt_id = "0378d235-c28b-4aac-9ac2-540242959f62"
+    current_prompt_id = "ad248357-9ff4-4589-ae93-4a35875c7211"
+
+    class CumulativeLogsClient:
+        def __init__(self) -> None:
+            self.poll_count = 0
+
+        def predict(self, **kwargs: Any) -> Any:
+            if kwargs["api_name"] == "/add_to_queue_wrapper":
+                return ("accepted", "queue: 1")
+            self.poll_count += 1
+            logs = f"previous Prompt ID: {old_prompt_id}"
+            if self.poll_count > 1:
+                logs += f"\ncurrent Prompt ID: {current_prompt_id}"
+            return ([], "generating", "queue: 0", "gpu", logs)
+
+    template = tmp_path / "template.mp4"
+    audio = tmp_path / "audio.mp3"
+    template.write_bytes(b"video")
+    audio.write_bytes(b"audio")
+    client = CumulativeLogsClient()
+    fetched: list[str] = []
+    settings = Settings(
+        tmp_path,
+        "token",
+        "https://worker",
+        comfyui_url="http://127.0.0.1:8188",
+        poll_interval_seconds=0,
+        task_timeout_seconds=10,
+    )
+
+    def fetch_json(url: str) -> Any:
+        fetched.append(url)
+        prompt_id = url.rsplit("/", 1)[-1]
+        if prompt_id != current_prompt_id:
+            return {}
+        return {
+            current_prompt_id: {
+                "outputs": {
+                    "131": {
+                        "gifs": [{"filename": "InfiniteTalk-current.mp4", "subfolder": "", "type": "output"}]
+                    }
+                }
+            }
+        }
+
+    adapter = GradioInfiniteTalkAdapter(
+        settings,
+        client_factory=lambda _: client,
+        file_factory=lambda path: f"file:{path}",
+        downloader=lambda _url, target: target.write_bytes(b"current result"),
+        json_fetcher=fetch_json,
+        sleep=lambda _: None,
+    )
+    now = utc_now()
+    job = JobRecord(
+        id="job",
+        status=JobStatus.RUNNING,
+        template_video_path=template,
+        driving_audio_path=audio,
+        output_path=None,
+        client_ref=None,
+        submitted_by=None,
+        options=GenerationOptions(),
+        message="running",
+        logs="",
+        error=None,
+        cancel_requested=False,
+        created_at=now,
+        updated_at=now,
+        started_at=now,
+        finished_at=None,
+    )
+
+    result = adapter.generate(job, report=lambda _: None, should_cancel=lambda: False)
+
+    assert fetched[-1].endswith(current_prompt_id)
+    assert result.source_path.read_bytes() == b"current result"
