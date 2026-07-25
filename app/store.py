@@ -164,8 +164,8 @@ class JobStore:
     def update_progress(self, job_id: str, message: str, logs: str = "") -> None:
         with self._connection() as connection:
             connection.execute(
-                "UPDATE avatar_jobs SET message = ?, logs = ?, updated_at = ? WHERE id = ?",
-                (message[:2000], logs[-12000:], utc_now(), job_id),
+                "UPDATE avatar_jobs SET message = ?, logs = ?, updated_at = ? WHERE id = ? AND status = ?",
+                (message[:2000], logs[-12000:], utc_now(), job_id, JobStatus.RUNNING.value),
             )
 
     def complete(self, job_id: str, output_path: Path, message: str) -> None:
@@ -174,10 +174,19 @@ class JobStore:
             connection.execute(
                 """
                 UPDATE avatar_jobs
-                SET status = ?, output_path = ?, message = ?, updated_at = ?, finished_at = ?
-                WHERE id = ?
+                SET status = ?, output_path = ?, message = ?, error = NULL,
+                    cancel_requested = 0, updated_at = ?, finished_at = ?
+                WHERE id = ? AND status = ?
                 """,
-                (JobStatus.SUCCEEDED.value, str(output_path), message, now, now, job_id),
+                (
+                    JobStatus.SUCCEEDED.value,
+                    str(output_path),
+                    message,
+                    now,
+                    now,
+                    job_id,
+                    JobStatus.RUNNING.value,
+                ),
             )
 
     def fail(self, job_id: str, error: str) -> None:
@@ -187,9 +196,17 @@ class JobStore:
                 """
                 UPDATE avatar_jobs
                 SET status = ?, error = ?, message = ?, updated_at = ?, finished_at = ?
-                WHERE id = ?
+                WHERE id = ? AND status = ?
                 """,
-                (JobStatus.FAILED.value, error[:4000], "Avatar generation failed.", now, now, job_id),
+                (
+                    JobStatus.FAILED.value,
+                    error[:4000],
+                    "Avatar generation failed.",
+                    now,
+                    now,
+                    job_id,
+                    JobStatus.RUNNING.value,
+                ),
             )
 
     def mark_canceled(self, job_id: str, message: str = "Task canceled.") -> None:
@@ -199,9 +216,17 @@ class JobStore:
                 """
                 UPDATE avatar_jobs
                 SET status = ?, message = ?, updated_at = ?, finished_at = ?, cancel_requested = 1
-                WHERE id = ?
+                WHERE id = ? AND status IN (?, ?)
                 """,
-                (JobStatus.CANCELED.value, message, now, now, job_id),
+                (
+                    JobStatus.CANCELED.value,
+                    message,
+                    now,
+                    now,
+                    job_id,
+                    JobStatus.QUEUED.value,
+                    JobStatus.RUNNING.value,
+                ),
             )
 
     def request_cancel(self, job_id: str) -> JobRecord | None:

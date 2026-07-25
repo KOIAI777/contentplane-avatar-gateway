@@ -6,7 +6,7 @@ import threading
 from pathlib import Path
 
 from .gradio_adapter import AvatarAdapter, GenerationCanceled
-from .models import ProgressUpdate
+from .models import JobStatus, ProgressUpdate
 from .store import JobStore
 
 logger = logging.getLogger(__name__)
@@ -49,6 +49,9 @@ class JobWorker:
                 report=lambda update: self._report_progress(job.id, update),
                 should_cancel=lambda: self._store.is_cancel_requested(job.id) or self._stop_event.is_set(),
             )
+            current = self._store.get(job.id)
+            if current and current.status not in (JobStatus.QUEUED, JobStatus.RUNNING):
+                return True
             if self._store.is_cancel_requested(job.id):
                 self._store.mark_canceled(job.id)
                 return True

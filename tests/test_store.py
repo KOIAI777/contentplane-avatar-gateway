@@ -54,3 +54,26 @@ def test_store_cancels_queued_job_without_claiming_it(tmp_path: Path) -> None:
     assert canceled is not None
     assert canceled.status == JobStatus.CANCELED
     assert store.claim_next_queued() is None
+
+
+def test_late_worker_updates_do_not_overwrite_succeeded_job(tmp_path: Path) -> None:
+    store = JobStore(tmp_path / "jobs.sqlite3")
+    store.initialize()
+    store.create(make_job("completed", tmp_path))
+    claimed = store.claim_next_queued()
+    assert claimed is not None
+
+    output = tmp_path / "completed-result.mp4"
+    output.write_bytes(b"video")
+    store.complete(claimed.id, output, "done")
+    store.update_progress(claimed.id, "late progress", "late logs")
+    store.mark_canceled(claimed.id)
+    store.fail(claimed.id, "late failure")
+
+    completed = store.get(claimed.id)
+    assert completed is not None
+    assert completed.status == JobStatus.SUCCEEDED
+    assert completed.message == "done"
+    assert completed.output_path == output
+    assert completed.cancel_requested is False
+    assert completed.error is None
