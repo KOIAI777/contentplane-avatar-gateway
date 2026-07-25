@@ -1,18 +1,25 @@
 from __future__ import annotations
 
+import json
 import logging
+import re
 import shutil
 import time
 from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any, Protocol
-from urllib.parse import quote
+from urllib.parse import quote, urlencode
 from urllib.request import Request, urlopen
 
 from .config import Settings
 from .models import AvatarResult, JobRecord, ProgressUpdate
 
 logger = logging.getLogger(__name__)
+
+PROMPT_ID_PATTERN = re.compile(
+    r"\bPrompt\s+ID\s*[:：]\s*([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})",
+    re.IGNORECASE,
+)
 
 
 class GenerationCanceled(Exception):
@@ -37,6 +44,7 @@ class GradioInfiniteTalkAdapter:
         client_factory: Callable[[str], Any] | None = None,
         file_factory: Callable[[str], Any] | None = None,
         downloader: Callable[[str, Path], None] | None = None,
+        json_fetcher: Callable[[str], Any] | None = None,
         sleep: Callable[[float], None] = time.sleep,
         clock: Callable[[], float] = time.monotonic,
     ):
@@ -44,6 +52,7 @@ class GradioInfiniteTalkAdapter:
         self._client_factory = client_factory
         self._file_factory = file_factory
         self._downloader = downloader or self._download_video
+        self._json_fetcher = json_fetcher or self._fetch_json
         self._sleep = sleep
         self._clock = clock
         self._client: Any = None
@@ -87,6 +96,7 @@ class GradioInfiniteTalkAdapter:
         submitted_message = self._value_at(submission, 0) or "Task accepted by InfiniteTalk."
         submitted_queue = self._value_at(submission, 1)
         report(ProgressUpdate(message=self._join_status(submitted_message, submitted_queue)))
+        prompt_id = self._extract_prompt_id(self._join_status(submitted_message, submitted_queue))
 
         deadline = self._clock() + self._settings.task_timeout_seconds
         while self._clock() < deadline:
@@ -96,6 +106,7 @@ class GradioInfiniteTalkAdapter:
 
             snapshot = self._poll(client)
             gallery, status, queue_status, resources, logs = snapshot
+            prompt_id = prompt_id or self._extract_prompt_id(self._join_status(status, queue_status, resources, logs))
             report(
                 ProgressUpdate(
                     message=self._join_status(status, queue_status, resources),
@@ -107,6 +118,12 @@ class GradioInfiniteTalkAdapter:
                 raise GenerationCanceled()
             if self._looks_failed(status):
                 raise RuntimeError(status)
+
+            generated = self._find_comfyui_video(prompt_id)
+            if generated:
+                target = job.template_video_path.parent / "provider-result.mp4"
+                self._copy_generated_video(generated, target)
+                return AvatarResult(source_path=target, provider_result_url=generated)
 
             generated = self._find_new_video(gallery, baseline)
             if generated:
@@ -203,6 +220,55 @@ class GradioInfiniteTalkAdapter:
         return None
 
     @staticmethod
+    def _extract_prompt_id(value: str) -> str | None:
+        match = PROMPT_ID_PATTERN.search(value)
+        return match.group(1) if match else None
+
+    def _find_comfyui_video(self, prompt_id: str | None) -> str | None:
+        if not prompt_id or not self._settings.comfyui_url:
+            return None
+        try:
+            history = self._json_fetcher(f"{self._settings.comfyui_url}/history/{quote(prompt_id, safe='')}")
+        except Exception as error:  # noqa: BLE001 - polling must tolerate transient ComfyUI failures.
+            logger.warning("ComfyUI history request for prompt %s failed: %s", prompt_id, error)
+            return None
+
+        reference = self._comfyui_output_reference(history, prompt_id)
+        if not reference:
+            return None
+        query = urlencode(
+            {
+                "filename": reference["filename"],
+                "subfolder": reference.get("subfolder", ""),
+                "type": reference.get("type", "output"),
+            }
+        )
+        return f"{self._settings.comfyui_url}/view?{query}"
+
+    @staticmethod
+    def _comfyui_output_reference(history: Any, prompt_id: str) -> dict[str, str] | None:
+        if not isinstance(history, dict):
+            return None
+        prompt = history.get(prompt_id)
+        if not isinstance(prompt, dict):
+            return None
+        outputs = prompt.get("outputs")
+        if not isinstance(outputs, dict):
+            return None
+        for output in outputs.values():
+            if not isinstance(output, dict):
+                continue
+            for item in reversed(output.get("gifs", [])):
+                if (
+                    isinstance(item, dict)
+                    and item.get("type") == "output"
+                    and isinstance(item.get("filename"), str)
+                    and item["filename"]
+                ):
+                    return item
+        return None
+
+    @staticmethod
     def _looks_failed(status: str) -> bool:
         normalized = status.lower()
         return any(marker in normalized for marker in ("failed", "failure", "error", "exception", "失败", "错误"))
@@ -245,3 +311,9 @@ class GradioInfiniteTalkAdapter:
         if target.stat().st_size == 0:
             target.unlink(missing_ok=True)
             raise RuntimeError("InfiniteTalk returned an empty video file")
+
+    @staticmethod
+    def _fetch_json(url: str) -> Any:
+        request = Request(url, headers={"User-Agent": "ContentPlane-Avatar-Gateway/0.1"})
+        with urlopen(request, timeout=30) as response:
+            return json.load(response)

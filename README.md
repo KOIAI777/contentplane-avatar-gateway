@@ -25,6 +25,7 @@ Configure the environment:
 ```bash
 export GATEWAY_API_TOKEN="replace-with-a-long-random-token"
 export INFINITETALK_GRADIO_URL="http://127.0.0.1:7860"
+export INFINITETALK_COMFYUI_URL="http://127.0.0.1:8188"
 export GATEWAY_DATA_DIR="./data"
 ```
 
@@ -91,6 +92,7 @@ Mount `GATEWAY_DATA_DIR` on persistent storage. Queued tasks survive a gateway r
 
 - Run exactly one Uvicorn worker. SQLite also prevents a second process from claiming another job while one is already marked `running`.
 - Deploy the gateway beside InfiniteTalk and connect through `127.0.0.1:7860` to avoid uploading large media through the public network twice.
+- Set `INFINITETALK_COMFYUI_URL` when ComfyUI is reachable. The gateway uses the Prompt ID from InfiniteTalk logs to read the completed output directly from ComfyUI, so another Gradio client cannot consume the only completion result first.
 - The upstream Gradio port is still unauthenticated. For production, bind it to localhost or restrict it with the platform firewall so only this gateway is public.
 - The first release intentionally supports video-driven avatars only. Voice cloning and speech synthesis remain separate ContentPlane providers; the gateway receives only the final driving audio.
 
