@@ -102,6 +102,8 @@ def test_adapter_submits_video_mode_and_downloads_new_gallery_item(tmp_path: Pat
     assert submit["st"] == 4
     assert submit["bl"] == 40
     assert submit["frame_size"] == 61
+    assert submit["hd_enabled"] is True
+    assert submit["hd_res"] == 1080
     assert submit["cam_ctrl"] is True
     assert submit["pose_stabilize"] is True
     assert downloaded == ["https://worker/new.mp4"]

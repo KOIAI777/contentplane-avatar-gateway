@@ -34,8 +34,8 @@ class GenerationOptions(BaseModel):
     frame_window: int = Field(default=61, ge=41, le=101)
     fps: int = Field(default=25, ge=1, le=60)
     seed: int = -1
-    hd_enabled: bool = False
-    hd_resolution: int = Field(default=720, ge=720, le=1440)
+    hd_enabled: bool = True
+    hd_resolution: int = Field(default=1080, ge=720, le=1440)
     camera_control: bool = True
     pose_stabilize: bool = True
     positive_prompt: str = Field(default=DEFAULT_POSITIVE_PROMPT, min_length=1, max_length=2000)
@@ -72,8 +72,8 @@ class GenerationOptions(BaseModel):
     @field_validator("hd_resolution")
     @classmethod
     def validate_hd_resolution(cls, value: int) -> int:
-        if value % 16:
-            raise ValueError("hd_resolution must be a multiple of 16")
+        if value % 8:
+            raise ValueError("hd_resolution must be a multiple of 8")
         return value
 
 

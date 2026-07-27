@@ -29,7 +29,7 @@ def test_task_api_requires_auth_and_persists_uploads(tmp_path: Path) -> None:
             data={
                 "client_ref": "project-123",
                 "submitted_by": "operator-a",
-                "options": '{"steps": 4, "camera_control": true}',
+                "options": '{"steps": 4, "camera_control": true, "hd_enabled": true, "hd_resolution": 1080}',
             },
         )
         assert response.status_code == 202
