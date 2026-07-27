@@ -34,7 +34,7 @@ class GenerationOptions(BaseModel):
     frame_window: int = Field(default=61, ge=41, le=101)
     fps: int = Field(default=25, ge=1, le=60)
     seed: int = -1
-    hd_enabled: bool = True
+    hd_enabled: bool = False
     hd_resolution: int = Field(default=1080, ge=720, le=1440)
     camera_control: bool = True
     pose_stabilize: bool = True
