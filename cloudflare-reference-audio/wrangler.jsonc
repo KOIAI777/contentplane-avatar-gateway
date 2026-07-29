@@ -1,0 +1,19 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "contentplane-reference-audio",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-07-29",
+  "r2_buckets": [
+    {
+      "binding": "REFERENCE_AUDIO",
+      "bucket_name": "contentplane-reference-audio"
+    }
+  ],
+  "triggers": {
+    "crons": ["*/15 * * * *"]
+  },
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 0.1
+  }
+}
