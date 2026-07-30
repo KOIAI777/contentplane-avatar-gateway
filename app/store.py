@@ -6,7 +6,7 @@ import threading
 from datetime import datetime, timezone
 from pathlib import Path
 
-from .models import GenerationOptions, JobRecord, JobStatus
+from .models import BatchRecord, GenerationOptions, JobRecord, JobStatus
 
 
 def utc_now() -> str:
@@ -21,6 +21,16 @@ class JobStore:
     def initialize(self) -> None:
         self._database_path.parent.mkdir(parents=True, exist_ok=True)
         with self._connection() as connection:
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS avatar_batches (
+                    id TEXT PRIMARY KEY,
+                    client_ref TEXT,
+                    submitted_by TEXT,
+                    created_at TEXT NOT NULL
+                )
+                """
+            )
             connection.execute(
                 """
                 CREATE TABLE IF NOT EXISTS avatar_jobs (
@@ -39,12 +49,21 @@ class JobStore:
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL,
                     started_at TEXT,
-                    finished_at TEXT
+                    finished_at TEXT,
+                    batch_id TEXT,
+                    batch_index INTEGER,
+                    worker_id TEXT
                 )
                 """
             )
+            self._ensure_column(connection, "avatar_jobs", "batch_id", "TEXT")
+            self._ensure_column(connection, "avatar_jobs", "batch_index", "INTEGER")
+            self._ensure_column(connection, "avatar_jobs", "worker_id", "TEXT")
             connection.execute(
                 "CREATE INDEX IF NOT EXISTS avatar_jobs_status_created_idx ON avatar_jobs(status, created_at)"
+            )
+            connection.execute(
+                "CREATE INDEX IF NOT EXISTS avatar_jobs_batch_index_idx ON avatar_jobs(batch_id, batch_index)"
             )
 
     def recover_after_restart(self) -> int:
@@ -73,28 +92,53 @@ class JobStore:
                 INSERT INTO avatar_jobs (
                     id, status, template_video_path, driving_audio_path, output_path,
                     client_ref, submitted_by, options_json, message, logs, error,
-                    cancel_requested, created_at, updated_at, started_at, finished_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    cancel_requested, created_at, updated_at, started_at, finished_at,
+                    batch_id, batch_index, worker_id
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                (
-                    job.id,
-                    job.status.value,
-                    str(job.template_video_path),
-                    str(job.driving_audio_path),
-                    str(job.output_path) if job.output_path else None,
-                    job.client_ref,
-                    job.submitted_by,
-                    job.options.model_dump_json(),
-                    job.message,
-                    job.logs,
-                    job.error,
-                    int(job.cancel_requested),
-                    job.created_at,
-                    job.updated_at,
-                    job.started_at,
-                    job.finished_at,
-                ),
+                self._job_values(job),
             )
+
+    def create_batch(self, batch: BatchRecord, jobs: list[JobRecord]) -> None:
+        if not jobs:
+            raise ValueError("A batch must contain at least one job")
+        with self._connection() as connection:
+            connection.execute(
+                "INSERT INTO avatar_batches (id, client_ref, submitted_by, created_at) VALUES (?, ?, ?, ?)",
+                (batch.id, batch.client_ref, batch.submitted_by, batch.created_at),
+            )
+            for job in jobs:
+                connection.execute(
+                    """
+                    INSERT INTO avatar_jobs (
+                        id, status, template_video_path, driving_audio_path, output_path,
+                        client_ref, submitted_by, options_json, message, logs, error,
+                        cancel_requested, created_at, updated_at, started_at, finished_at,
+                        batch_id, batch_index, worker_id
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    self._job_values(job),
+                )
+
+    def get_batch(self, batch_id: str) -> BatchRecord | None:
+        with self._connection() as connection:
+            row = connection.execute("SELECT * FROM avatar_batches WHERE id = ?", (batch_id,)).fetchone()
+        return self._row_to_batch(row) if row else None
+
+    def list_batches(self, limit: int = 100) -> list[BatchRecord]:
+        with self._connection() as connection:
+            rows = connection.execute(
+                "SELECT * FROM avatar_batches ORDER BY created_at DESC LIMIT ?", (limit,)
+            ).fetchall()
+        return [self._row_to_batch(row) for row in rows]
+
+    def list_jobs_for_batch(self, batch_id: str) -> list[JobRecord]:
+        with self._connection() as connection:
+            rows = connection.execute(
+                "SELECT * FROM avatar_jobs WHERE batch_id = ? ORDER BY batch_index ASC, created_at ASC",
+                (batch_id,),
+            ).fetchall()
+        return [self._row_to_job(row) for row in rows]
 
     def get(self, job_id: str) -> JobRecord | None:
         with self._connection() as connection:
@@ -117,21 +161,14 @@ class JobStore:
             ).fetchone()[0]
         return int(count)
 
-    def claim_next_queued(self) -> JobRecord | None:
+    def claim_next_queued(self, worker_id: str) -> JobRecord | None:
         now = utc_now()
         with self._lock:
             connection = self._open_connection()
             try:
                 connection.execute("BEGIN IMMEDIATE")
-                active = connection.execute(
-                    "SELECT 1 FROM avatar_jobs WHERE status = ? LIMIT 1",
-                    (JobStatus.RUNNING.value,),
-                ).fetchone()
-                if active:
-                    connection.commit()
-                    return None
                 row = connection.execute(
-                    "SELECT * FROM avatar_jobs WHERE status = ? ORDER BY created_at ASC LIMIT 1",
+                    "SELECT * FROM avatar_jobs WHERE status = ? ORDER BY created_at ASC, rowid ASC LIMIT 1",
                     (JobStatus.QUEUED.value,),
                 ).fetchone()
                 if not row:
@@ -140,14 +177,15 @@ class JobStore:
                 connection.execute(
                     """
                     UPDATE avatar_jobs
-                    SET status = ?, message = ?, updated_at = ?, started_at = ?
+                    SET status = ?, message = ?, updated_at = ?, started_at = ?, worker_id = ?
                     WHERE id = ? AND status = ?
                     """,
                     (
                         JobStatus.RUNNING.value,
-                        "Submitting task to the avatar worker.",
+                        f"Submitting task to avatar worker {worker_id}.",
                         now,
                         now,
+                        worker_id,
                         row["id"],
                         JobStatus.QUEUED.value,
                     ),
@@ -247,6 +285,11 @@ class JobStore:
                 )
         return self.get(job_id)
 
+    def request_cancel_batch(self, batch_id: str) -> list[JobRecord]:
+        for job in self.list_jobs_for_batch(batch_id):
+            self.request_cancel(job.id)
+        return self.list_jobs_for_batch(batch_id)
+
     def is_cancel_requested(self, job_id: str) -> bool:
         with self._connection() as connection:
             row = connection.execute("SELECT cancel_requested FROM avatar_jobs WHERE id = ?", (job_id,)).fetchone()
@@ -283,7 +326,49 @@ class JobStore:
             updated_at=row["updated_at"],
             started_at=row["started_at"],
             finished_at=row["finished_at"],
+            batch_id=row["batch_id"],
+            batch_index=row["batch_index"],
+            worker_id=row["worker_id"],
         )
+
+    @staticmethod
+    def _row_to_batch(row: sqlite3.Row) -> BatchRecord:
+        return BatchRecord(
+            id=row["id"],
+            client_ref=row["client_ref"],
+            submitted_by=row["submitted_by"],
+            created_at=row["created_at"],
+        )
+
+    @staticmethod
+    def _job_values(job: JobRecord) -> tuple[object, ...]:
+        return (
+            job.id,
+            job.status.value,
+            str(job.template_video_path),
+            str(job.driving_audio_path),
+            str(job.output_path) if job.output_path else None,
+            job.client_ref,
+            job.submitted_by,
+            job.options.model_dump_json(),
+            job.message,
+            job.logs,
+            job.error,
+            int(job.cancel_requested),
+            job.created_at,
+            job.updated_at,
+            job.started_at,
+            job.finished_at,
+            job.batch_id,
+            job.batch_index,
+            job.worker_id,
+        )
+
+    @staticmethod
+    def _ensure_column(connection: sqlite3.Connection, table: str, column: str, definition: str) -> None:
+        columns = {row["name"] for row in connection.execute(f"PRAGMA table_info({table})").fetchall()}
+        if column not in columns:
+            connection.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
 
 
 class _LockedConnection:

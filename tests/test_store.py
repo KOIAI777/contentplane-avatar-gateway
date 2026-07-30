@@ -26,22 +26,24 @@ def make_job(job_id: str, root: Path) -> JobRecord:
     )
 
 
-def test_store_claims_only_one_running_job(tmp_path: Path) -> None:
+def test_store_assigns_different_queued_jobs_to_two_workers(tmp_path: Path) -> None:
     store = JobStore(tmp_path / "jobs.sqlite3")
     store.initialize()
     store.create(make_job("first", tmp_path))
     store.create(make_job("second", tmp_path))
 
-    first = store.claim_next_queued()
+    first = store.claim_next_queued("gpu-0")
     assert first is not None
     assert first.id == "first"
     assert first.status == JobStatus.RUNNING
-    assert store.claim_next_queued() is None
+    assert first.worker_id == "gpu-0"
 
-    store.complete(first.id, tmp_path / "first-result.mp4", "done")
-    second = store.claim_next_queued()
+    second = store.claim_next_queued("gpu-1")
     assert second is not None
     assert second.id == "second"
+    assert second.status == JobStatus.RUNNING
+    assert second.worker_id == "gpu-1"
+    assert store.claim_next_queued("gpu-2") is None
 
 
 def test_store_cancels_queued_job_without_claiming_it(tmp_path: Path) -> None:
@@ -53,14 +55,14 @@ def test_store_cancels_queued_job_without_claiming_it(tmp_path: Path) -> None:
 
     assert canceled is not None
     assert canceled.status == JobStatus.CANCELED
-    assert store.claim_next_queued() is None
+    assert store.claim_next_queued("gpu-0") is None
 
 
 def test_late_worker_updates_do_not_overwrite_succeeded_job(tmp_path: Path) -> None:
     store = JobStore(tmp_path / "jobs.sqlite3")
     store.initialize()
     store.create(make_job("completed", tmp_path))
-    claimed = store.claim_next_queued()
+    claimed = store.claim_next_queued("gpu-0")
     assert claimed is not None
 
     output = tmp_path / "completed-result.mp4"

@@ -58,13 +58,14 @@ def test_worker_completes_one_queued_job(tmp_path: Path) -> None:
             finished_at=None,
         )
     )
-    worker = JobWorker(store, SuccessfulAdapter(), tmp_path / "outputs")
+    worker = JobWorker("gpu-0", store, SuccessfulAdapter(), tmp_path / "outputs")
 
     assert worker.run_once() is True
 
     completed = store.get("job")
     assert completed is not None
     assert completed.status == JobStatus.SUCCEEDED
+    assert completed.worker_id == "gpu-0"
     assert completed.logs == "worker log"
     assert completed.output_path is not None
     assert completed.output_path.read_bytes() == b"generated video"
@@ -103,7 +104,12 @@ def test_worker_does_not_overwrite_externally_reconciled_success(tmp_path: Path)
     )
     reconciled_output = tmp_path / "outputs" / "reconciled.mp4"
     reconciled_output.parent.mkdir(parents=True)
-    worker = JobWorker(store, ExternallyCompletedAdapter(store, reconciled_output), tmp_path / "outputs")
+    worker = JobWorker(
+        "gpu-0",
+        store,
+        ExternallyCompletedAdapter(store, reconciled_output),
+        tmp_path / "outputs",
+    )
 
     assert worker.run_once() is True
 

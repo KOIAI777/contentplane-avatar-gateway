@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 from enum import Enum
 from pathlib import Path
 
@@ -22,6 +23,15 @@ class JobStatus(str, Enum):
     FAILED = "failed"
     CANCELED = "canceled"
     INTERRUPTED = "interrupted"
+
+
+class BatchStatus(str, Enum):
+    QUEUED = "queued"
+    RUNNING = "running"
+    SUCCEEDED = "succeeded"
+    PARTIAL_FAILED = "partial_failed"
+    FAILED = "failed"
+    CANCELED = "canceled"
 
 
 class GenerationOptions(BaseModel):
@@ -95,6 +105,17 @@ class JobRecord:
     updated_at: str
     started_at: str | None
     finished_at: str | None
+    batch_id: str | None = None
+    batch_index: int | None = None
+    worker_id: str | None = None
+
+
+@dataclass(frozen=True)
+class BatchRecord:
+    id: str
+    client_ref: str | None
+    submitted_by: str | None
+    created_at: str
 
 
 @dataclass(frozen=True)
@@ -129,3 +150,27 @@ class TaskResponse(BaseModel):
     started_at: str | None
     finished_at: str | None
     result_url: str | None
+    batch_id: str | None
+    batch_index: int | None
+    worker_id: str | None
+
+
+class BatchResponse(BaseModel):
+    id: str
+    status: BatchStatus
+    client_ref: str | None
+    submitted_by: str | None
+    created_at: str
+    total: int
+    queued: int
+    running: int
+    succeeded: int
+    failed: int
+    canceled: int
+    tasks: list[TaskResponse]
+
+
+class ReferenceAudioUploadResponse(BaseModel):
+    id: str
+    url: str
+    expires_at: datetime
