@@ -6,9 +6,12 @@ The Worker is intentionally independent from the GPU avatar gateway. It stores a
 
 ```text
 POST   /v1/reference-audio
-GET    /v1/reference-audio/{id}?expires=...&signature=...
+GET    /v1/reference-audio/{id}/{expires}/{signature}.{ext}
+HEAD   /v1/reference-audio/{id}/{expires}/{signature}.{ext}
 DELETE /v1/reference-audio/{id}
 ```
+
+New uploads return a queryless, extension-bearing signed URL so speech providers can validate the media type before downloading it. `HEAD` returns the same metadata headers as `GET` without streaming the object body.
 
 Uploaded objects expire after 15 minutes. The Worker also runs a 15-minute cleanup cron for files left behind after a failed client request.
 

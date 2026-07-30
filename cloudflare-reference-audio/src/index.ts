@@ -45,8 +45,8 @@ export default {
         return await uploadReferenceAudio(request, env, url.origin);
       }
 
-      if (route.id !== undefined && request.method === "GET") {
-        return await downloadReferenceAudio(request, env, route.id, url);
+      if (route.id !== undefined && (request.method === "GET" || request.method === "HEAD")) {
+        return await downloadReferenceAudio(request, env, route, url);
       }
 
       if (route.id !== undefined && request.method === "DELETE") {
@@ -55,7 +55,7 @@ export default {
         return withCors(new Response(null, { status: 204 }));
       }
 
-      return json({ error: "Method not allowed" }, 405, { Allow: "GET, POST, DELETE, OPTIONS" });
+      return json({ error: "Method not allowed" }, 405, { Allow: "GET, HEAD, POST, DELETE, OPTIONS" });
     } catch (error) {
       if (error instanceof HttpError) return json({ error: error.message }, error.status);
       console.error("reference-audio request failed", error);
@@ -116,14 +116,21 @@ async function uploadReferenceAudio(request: Request, env: RuntimeEnv, origin: s
   const signature = await signDownload(id, expiresAt, env.DOWNLOAD_SIGNING_SECRET);
   return json({
     id,
-    url: `${origin}${referencePath(id)}?expires=${expiresAt}&signature=${encodeURIComponent(signature)}`,
+    url: `${origin}${referencePath(id, expiresAt, signature, AUDIO_EXTENSIONS[contentType])}`,
     expires_at: new Date(expiresAt).toISOString(),
   }, 201);
 }
 
-async function downloadReferenceAudio(request: Request, env: RuntimeEnv, id: string, url: URL): Promise<Response> {
-  const expiresAt = Number(url.searchParams.get("expires") || 0);
-  const signature = url.searchParams.get("signature") || "";
+async function downloadReferenceAudio(
+  request: Request,
+  env: RuntimeEnv,
+  route: ReferenceRoute,
+  url: URL,
+): Promise<Response> {
+  if (!route.id) throw new HttpError(404, "参考音频不存在");
+  const id = route.id;
+  const expiresAt = route.expiresAt || Number(url.searchParams.get("expires") || 0);
+  const signature = route.signature || url.searchParams.get("signature") || "";
   if (!expiresAt || expiresAt <= Date.now() || !signature) {
     await env.REFERENCE_AUDIO.delete(referenceKey(id));
     throw new HttpError(404, "参考音频已过期");
@@ -132,34 +139,64 @@ async function downloadReferenceAudio(request: Request, env: RuntimeEnv, id: str
     throw new HttpError(403, "参考音频签名无效");
   }
 
-  const object = await env.REFERENCE_AUDIO.get(referenceKey(id));
+  let object: R2Object | null;
+  let body: ReadableStream | null = null;
+  if (request.method === "HEAD") {
+    object = await env.REFERENCE_AUDIO.head(referenceKey(id));
+  } else {
+    const bodyObject = await env.REFERENCE_AUDIO.get(referenceKey(id));
+    object = bodyObject;
+    body = bodyObject?.body || null;
+  }
   if (!object) throw new HttpError(404, "参考音频不存在");
   if (Number(object.customMetadata?.expiresAt || 0) <= Date.now()) {
     await env.REFERENCE_AUDIO.delete(referenceKey(id));
     throw new HttpError(404, "参考音频已过期");
   }
+  const contentType = object.httpMetadata?.contentType || object.customMetadata?.contentType || "application/octet-stream";
+  const storedExtension = AUDIO_EXTENSIONS[contentType];
+  if (route.extension && route.extension !== storedExtension) {
+    throw new HttpError(404, "参考音频格式不匹配");
+  }
 
   const headers = new Headers();
   object.writeHttpMetadata(headers);
-  headers.set("Content-Type", object.httpMetadata?.contentType || "application/octet-stream");
+  headers.set("Content-Type", contentType);
   headers.set("Content-Length", String(object.size));
   headers.set("Cache-Control", "private, max-age=60");
   headers.set("Content-Disposition", `inline; filename="${safeHeaderFileName(object.customMetadata?.fileName || `${id}.audio`)}"`);
   headers.set("X-Content-Type-Options", "nosniff");
-  return withCors(new Response(object.body, { headers }));
+  return withCors(new Response(body, { headers }));
 }
 
-function referenceRoute(pathname: string): { id?: string } | null {
+interface ReferenceRoute {
+  id?: string;
+  extension?: string;
+  expiresAt?: number;
+  signature?: string;
+}
+
+function referenceRoute(pathname: string): ReferenceRoute | null {
   const parts = pathname.split("/").filter(Boolean);
   if (parts.length === 2 && parts[0] === "v1" && parts[1] === "reference-audio") return {};
-  if (parts.length === 3 && parts[0] === "v1" && parts[1] === "reference-audio" && isReferenceId(parts[2])) {
-    return { id: parts[2] };
+  if (parts.length === 3 && parts[0] === "v1" && parts[1] === "reference-audio") {
+    const match = /^([0-9a-f-]+)(?:\.(aac|flac|m4a|mp3|ogg|wav|webm))?$/i.exec(parts[2]);
+    if (match?.[1] && isReferenceId(match[1])) {
+      return { id: match[1], extension: match[2]?.toLowerCase() };
+    }
+  }
+  if (parts.length === 5 && parts[0] === "v1" && parts[1] === "reference-audio" && isReferenceId(parts[2])) {
+    const expiresAt = Number(parts[3]);
+    const match = /^([A-Za-z0-9_-]{32,128})\.(aac|flac|m4a|mp3|ogg|wav|webm)$/i.exec(parts[4]);
+    if (Number.isSafeInteger(expiresAt) && expiresAt > 0 && match?.[1] && match[2]) {
+      return { id: parts[2], expiresAt, signature: match[1], extension: match[2].toLowerCase() };
+    }
   }
   return null;
 }
 
-function referencePath(id: string): string {
-  return `/v1/reference-audio/${encodeURIComponent(id)}`;
+function referencePath(id: string, expiresAt: number, signature: string, extension: string): string {
+  return `/v1/reference-audio/${encodeURIComponent(id)}/${expiresAt}/${signature}.${extension}`;
 }
 
 function referenceKey(id: string): string {
@@ -244,7 +281,7 @@ function withCors(response: Response): Response {
   const headers = new Headers(response.headers);
   headers.set("Access-Control-Allow-Origin", "*");
   headers.set("Access-Control-Allow-Headers", "Authorization, Content-Type");
-  headers.set("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS");
+  headers.set("Access-Control-Allow-Methods", "GET, HEAD, POST, DELETE, OPTIONS");
   headers.set("Access-Control-Max-Age", "86400");
   return new Response(response.body, { status: response.status, statusText: response.statusText, headers });
 }

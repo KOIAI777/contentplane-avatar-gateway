@@ -3,6 +3,13 @@
   "name": "contentplane-reference-audio",
   "main": "src/index.ts",
   "compatibility_date": "2026-07-29",
+  "workers_dev": true,
+  "routes": [
+    {
+      "pattern": "audio.contentt.xyz",
+      "custom_domain": true
+    }
+  ],
   "r2_buckets": [
     {
       "binding": "REFERENCE_AUDIO",
